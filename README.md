@@ -54,7 +54,7 @@ SO-101 アーム（LeRobot）が、曲に合わせて2つの打楽器（おも�
 | `scripts/trim_strikes.py` / `scripts/qc_dataset.py` | 録画したデータの切り出しと確認 |
 | `scripts/offline_lang_check.py` / `scripts/smolvla_latency.py` | SmolVLA の指示文の効き方と推論時間の確認 |
 | `scripts/mic_check.py` / `scripts/camera_probe.py` | マイクとカメラの確認 |
-| `song/build_song.py` / `song/score.txt` | 曲を ableton-cli で Live に組む / ロボットの楽譜 |
+| `song/build_song.py` / `song/score.txt` | 曲の音符（和音・ベース・ベル・ハイハット）を Live に打ち込む / ロボットの楽譜 |
 | `video/build_video.py` | 提出動画の編集（ffmpeg） |
 | `video/diagram/` | しくみの図（Excalidraw） |
 | `refs/` | 学習時の正面と手首カメラの基準画像、演奏の日の手首カメラ画像 |
@@ -78,7 +78,7 @@ export SO101_LEADER_PORT=/dev/cu.usbmodemYYYY
 2. **学習**
    - ACT は楽器ごとに1つ: `lerobot-train --policy.type=act --dataset.repo_id=local/so101-strike-mix --dataset.episodes='[...]' --steps=20000 --batch_size=8`（chunk_size 100、学習率 1e-5、resnet18）。drum の episode は `[0,1,3,5,7,9,10,12,14,17,19,21]`、bowl は `[2,4,6,8,11,13,15,16,18,20,22,23]`。
    - SmolVLA は全24本で1つ: `--policy.path=lerobot/smolvla_base --steps=6000 --batch_size=64`。カメラ名を `--rename_map='{"observation.images.front": "observation.images.camera1", "observation.images.wrist": "observation.images.camera2"}'` で対応づける。
-3. **曲**: Live を起動して AbletonMCP の Remote Script を有効にし、`python song/build_song.py` を実行する。
+3. **曲**: `song/build_song.py` は Live をコマンドで操作するツール（`ableton` コマンド。AbletonMCP の Remote Script 経由）で曲を打ち込む。このツールが無い場合は、`build()` が返す音符（90BPM・24小節）を Live に手で打ち込めば同じ曲になる。ロボットの楽譜 `song/score.txt` は `python -c "from song.build_song import score; print(score())"` でも出せる。
 4. **演奏**: Live の Link を ON にして、次を実行する。
 
    ```bash
