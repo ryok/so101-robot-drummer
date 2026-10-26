@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+outputs/
+datasets/
+*.mp4
+*.safetensors
+.DS_Store
