@@ -3,7 +3,7 @@
 SO-101 アーム（LeRobot）が、曲に合わせて2つの打楽器（おもちゃのドラムと、伏せたステンレスのボウル）を叩き分けるプロジェクト。
 叩く場所はAI（模倣学習の ACT）が決め、振り下ろしは決まった動きにして Ableton Link の拍に合わせる。
 
-- 動画: （YouTube の URL を入れる）
+- 動画: https://youtu.be/h5nsWipI0aA
 - 曲: 自作曲（90BPM、`song/build_song.py` で Ableton Live に組む）
 
 ![しくみ](video/diagram/system.png)
@@ -56,6 +56,7 @@ SO-101 アーム（LeRobot）が、曲に合わせて2つの打楽器（おも�
 | `scripts/mic_check.py` / `scripts/camera_probe.py` | マイクとカメラの確認 |
 | `song/build_song.py` / `song/score.txt` | 曲の音符（和音・ベース・ベル・ハイハット）を Live に打ち込む / ロボットの楽譜 |
 | `video/build_video.py` | 提出動画の編集（ffmpeg） |
+| `video/mask_takes.py` | 撮った映像の、台と腕が動く範囲より外側にモザイクをかける（手持ちで動くカメラを天板の特徴点で追う） |
 | `video/diagram/` | しくみの図（Excalidraw） |
 | `refs/` | 学習時の正面と手首カメラの基準画像、演奏の日の手首カメラ画像 |
 

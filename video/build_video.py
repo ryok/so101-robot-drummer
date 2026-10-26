@@ -1,7 +1,8 @@
 """提出動画の下書きを ffmpeg で組み立てる（構成表は LIFE の ideas/2026-10/20261025-pai-final-video-plan.md）。
 スマホの3テイクを小節の頭で切り替え、音は IMG_0344 を通しで使う（3本とも曲・譜面・テンポが同じなので1回の演奏に見える）。
 字幕は PIL で PNG にして overlay する（この ffmpeg には drawtext が無い）。位置情報は -map_metadata -1 で消す。
-使い方: python video/build_video.py [--src ~/Downloads] [--out outputs/video/draft.mp4]
+使い方: python video/build_video.py [--src ~/Downloads] [--masked outputs/video/masked] [--out outputs/video/draft.mp4]
+映像は video/mask_takes.py で台の外にモザイクをかけたもの（--masked）を使い、音だけ元の MOV から取る。
 """
 import argparse, os, subprocess
 
@@ -57,9 +58,60 @@ def text_png(path, lines, *, box=True, anchor="center", pos=None, bg=None):
     im.save(path)
 
 
+PANEL_W, PANEL_H = 600, 196
+PANEL_XY = (50, 46)       # 左上（0344 では右下だとドラム、右上だとドラムを叩く腕に重なる。縦長テイクの中央の映像にもかからない幅）
+
+
+def score_png(path, bars, cur, beat):
+    """左上の楽譜。上段は24小節の全体（今の小節を枠で囲む）、下段は今の小節の16ステップ（今の拍を明るくする）。
+    bars: [(楽器, 16文字のパターン)]。cur: 今の小節（1始まり、0=演奏前、25=演奏後）。beat: 今の拍（0〜3、-1=なし）"""
+    GRAY, YEL, DIM = (205, 214, 224), (255, 214, 102), 0.32
+    col = lambda inst: YEL if inst == "bowl" else GRAY
+    im = Image.new("RGBA", (PANEL_W, PANEL_H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, PANEL_W - 1, PANEL_H - 1), 16, fill=(12, 14, 20, 225))
+    d.text((22, 12), "楽譜", font=font(22), fill=(255, 255, 255, 255))
+    d.text((80, 15), "■ drum", font=font(18, False), fill=GRAY + (255,))
+    d.text((170, 15), "■ bowl", font=font(18, False), fill=YEL + (255,))
+    # 上段: 24小節
+    x0, y0, cw, gap = 22, 50, 19, 4
+    for i, (inst, _) in enumerate(bars, 1):
+        x = x0 + (i - 1) * (cw + gap)
+        k_ = 1.0 if i == cur else DIM if i < cur else 0.75     # 済んだ小節は暗く（透かさず色を沈める）
+        d.rounded_rectangle((x, y0, x + cw, y0 + 26), 4, fill=tuple(int(c * k_) for c in col(inst)) + (255,))
+        if i == cur:
+            d.rounded_rectangle((x - 3, y0 - 3, x + cw + 3, y0 + 29), 6, outline=(255, 255, 255, 255), width=3)
+        if i in (1, 5, 9, 13, 17, 21, 24):
+            d.text((x + cw / 2, y0 + 32), str(i), font=font(15, False), fill=(200, 200, 200, 255), anchor="mt")
+    # 下段: 今の小節の16ステップ
+    inst, pat = bars[min(max(cur, 1), len(bars)) - 1]
+    y1, sw = 112, (PANEL_W - 44) / 16
+    for k in range(4):
+        bx = 22 + k * 4 * sw
+        on = 1 <= cur <= len(bars) and k == beat
+        d.rounded_rectangle((bx + 2, y1, bx + 4 * sw - 2, y1 + 60), 8, fill=(90, 96, 110, 255) if on else (32, 35, 44, 255),
+                            outline=(255, 255, 255, 255) if on else None, width=2)
+        d.text((bx + 10, y1 + 4), f"{k + 1}拍", font=font(14, False), fill=(220, 220, 220, 255 if on else 140))
+    for j, ch in enumerate(pat):
+        cx, cy = 22 + (j + 0.5) * sw, y1 + 38
+        if ch == "x":
+            r = 13
+            a = 255 if 1 <= cur <= len(bars) else 110
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=col(inst) + (a,))
+        else:
+            d.ellipse((cx - 3, cy - 3, cx + 3, cy + 3), fill=(180, 180, 180, 120))
+    im.save(path)
+
+
+def take_file(src, take):
+    """テイクの映像ファイル。モザイク済みの mp4 があればそれ、無ければ元の MOV。"""
+    mp4 = os.path.join(src, take + ".mp4")
+    return mp4 if os.path.exists(mp4) else os.path.join(src, take + ".MOV")
+
+
 def video_in(take, start, dur, src):
     """テイクの一部を 1920×1080 の映像入力にする ffmpeg の引数とフィルタ。縦長は左右をぼかした同じ映像で埋める。"""
-    args = ["-ss", f"{max(start, 0):.3f}", "-t", f"{dur:.3f}", "-i", os.path.join(src, take + ".MOV")]
+    args = ["-ss", f"{max(start, 0):.3f}", "-t", f"{dur:.3f}", "-i", take_file(src, take)]
     if take in PORTRAIT:
         f = (f"[0:v]split[a][b];[a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
              f"boxblur=30:2,eq=brightness=-0.12[bg];[b]scale=-2:{H}[fg];[bg][fg]overlay=(W-w)/2:0,fps={FPS},setsar=1[v0]")
@@ -70,13 +122,14 @@ def video_in(take, start, dur, src):
 
 def segment(out, take, start, frames, src, overlays=()):
     """映像だけの区間を frames コマちょうどで作る（音は最後に1本で付ける。区間ごとに音を付けると継ぎ目でずれが積もる）。
-    overlays: [(png, t0, t1)]"""
+    overlays: [(png, t0, t1)] か [(png, t0, t1, x, y)]（小さい PNG を x, y に置く）"""
     dur = frames / FPS
     args, f = video_in(take, start, dur + 0.5, src)
     last = "v0"
-    for k, (png, t0, t1) in enumerate(overlays):
+    for k, (png, t0, t1, *xy) in enumerate(overlays):
+        x, y = xy or (0, 0)
         args += ["-loop", "1", "-t", f"{dur + 0.5:.3f}", "-i", png]
-        f += f";[{last}][{k + 1}:v]overlay=0:0:enable='between(t,{t0:.3f},{t1:.3f})'[v{k + 1}]"
+        f += f";[{last}][{k + 1}:v]overlay={x}:{y}:enable='between(t,{t0:.3f},{t1:.3f})'[v{k + 1}]"
         last = f"v{k + 1}"
     run(["ffmpeg", "-v", "error", "-y", *args, "-filter_complex", f, "-map", f"[{last}]", "-frames:v", str(frames), "-an",
          "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-map_metadata", "-1", out])
@@ -103,7 +156,7 @@ def build_audio(out, pieces, src, song=None, gain_db=0.0):
 
 
 def still(src, take, t, path):
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t}", "-i", os.path.join(src, take + ".MOV"), "-frames:v", "1", path])
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t}", "-i", take_file(src, take), "-frames:v", "1", path])
 
 
 def still_seg(out, pngs, frames):
@@ -122,6 +175,7 @@ def still_seg(out, pngs, frames):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default=os.path.expanduser("~/Downloads"))
+    ap.add_argument("--masked", default="outputs/video/masked", help="mask_takes.py の出力（台の外をモザイクにした映像）")
     ap.add_argument("--out", default="outputs/video/draft.mp4")
     ap.add_argument("--score", default="song/score.txt")
     ap.add_argument("--song", default=os.path.expanduser("~/Downloads/robot_song.wav"), help="Ableton から書き出した曲（無ければ重ねない）")
@@ -129,14 +183,16 @@ def main():
     ap.add_argument("--gain", type=float, default=10.0, help="[dB] 全体の音量。打音のピークはリミッターで抑える")
     ap.add_argument("--cam-vol", type=float, default=1.0, help="曲を重ねるときの演奏ブロックのカメラ音の音量")
     a = ap.parse_args()
+    if not all(os.path.exists(os.path.join(a.masked, t + ".mp4")) for t in BAR1):
+        print(f"{a.masked} にモザイク済みの映像が揃っていないので、元の MOV をそのまま使う"); a.masked = a.src
     work = os.path.join(os.path.dirname(a.out), "work")
     os.makedirs(work, exist_ok=True)
     p = lambda name: os.path.join(work, name)
     WHITE, SUB, ACC = (255, 255, 255, 255), (200, 210, 220, 255), (255, 214, 102, 255)
 
     # ---- 字幕・カードの画像 ----
-    still(a.src, "IMG_0365", 40, p("bg_0365.jpg"))
-    still(a.src, "IMG_0344", 30, p("bg_0344.jpg"))
+    still(a.masked, "IMG_0365", 40, p("bg_0365.jpg"))
+    still(a.masked, "IMG_0344", 30, p("bg_0344.jpg"))
     text_png(p("title.png"), [("AIロボットが 曲に合わせて 打楽器を叩く", 76, True, WHITE),
                               ("SO-101 × ACT × Ableton Link", 44, False, SUB)], bg=p("bg_0365.jpg"))
     # しくみ: video/diagram/system.png（Excalidraw）を白地の 1920×1080 に収める
@@ -150,12 +206,16 @@ def main():
                             ("・AIの照準と、固定の振り下ろしを組み合わせる", 38, False, WHITE),
                             ("・曲と拍単位で同期する（Ableton Link）", 38, False, WHITE),
                             ("・ACT（楽器ごとのモデル）と SmolVLA（指示文で1モデル）を比べる", 38, False, WHITE)], bg=p("bg_0344.jpg"))
-    bars = [tok.split(":")[0] for tok in open(a.score).read().split()]
+    score = [tuple(tok.split(":")) for tok in open(a.score).read().split()]
+    bars = [inst for inst, _ in score]
+    for n in range(0, 26):
+        for k in (range(4) if 1 <= n <= 24 else [-1]):
+            score_png(p(f"score{n:02d}_{max(k, 0)}.png"), score, n, k)
     for n, inst in enumerate(bars, 1):
         text_png(p(f"bar{n:02d}.png"), [(f"小節 {n}/24", 30, False, SUB),
                                         (f"\"Strike the {inst}\"", 44, True, ACC if inst == "bowl" else WHITE)],
                  anchor="left", pos=(70, 1020))
-    text_png(p("song.png"), [("曲: 自作曲（90BPM）", 34, False, WHITE)], anchor="left", pos=(70, 110))
+    text_png(p("song.png"), [("曲: 自作曲（90BPM）", 34, False, WHITE)], anchor="left", pos=(78, 330))
     text_png(p("result.png"), [("結果", 52, True, ACC),
                                ("3回の演奏とも、44打すべて楽器に命中（映像で確認）", 38, False, WHITE),
                                ("打点のずれ: 平均 +1〜3ms（曲なしでの基準測定）", 38, False, WHITE),
@@ -183,7 +243,7 @@ def main():
     # ---- 区間（映像はコマ数で、音は別に1本で） ----
     segs, audio = [], []
     def add(name, take, start, frames, overlays=(), sound=None):
-        out = p(f"{len(segs):02d}_{name}.mp4"); segment(out, take, start, frames, a.src, overlays); segs.append(out)
+        out = p(f"{len(segs):02d}_{name}.mp4"); segment(out, take, start, frames, a.masked, overlays); segs.append(out)
         if sound:
             audio.append((sound[0], sound[1], frames / FPS, sound[2]))
     sec = lambda x: round(x * FPS)
@@ -205,6 +265,16 @@ def main():
         for b in range(first, min(first + n, 25)):
             s_, e_ = bar_t("IMG_0344", b) - t0 - LEAD, bar_t("IMG_0344", b + 1) - t0 - LEAD
             ov.append((p(f"bar{b:02d}.png"), max(s_, 0), e_ if b < 24 else 999))
+        # 左上の楽譜は拍の頭ちょうどで進める（左下の指示は LEAD 秒早く出る）
+        for b in range(first, min(first + n, 25)):
+            for k in range(4):
+                s0 = bar_t("IMG_0344", b) + k * BAR / 4 - t0
+                s1 = s0 + BAR / 4
+                if b == first and k == 0:
+                    s0 = min(s0, 0)
+                ov.append((p(f"score{b:02d}_{k}.png"), max(s0, 0), s1, *PANEL_XY))
+        if first + n > 24:
+            ov.append((p("score25_0.png"), bar_t("IMG_0344", 25) - t0, 999, *PANEL_XY))
         if first == 1:
             ov.append((p("song.png"), 0, 5))
         add(f"perf{first:02d}", take, v0, f1 - f0, ov)
@@ -227,7 +297,10 @@ def main():
         f.writelines(f"file '{os.path.abspath(s)}'\n" for s in segs)
     build_audio(p("audio.wav"), audio, a.src, song, a.gain)
     run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", p("audio.wav"), "-map", "0:v", "-map", "1:a",
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-map_metadata", "-1", "-movflags", "+faststart", "-shortest", a.out])
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-map_metadata", "-1", "-movflags", "+faststart", "-shortest",
+         # 元は iPhone の HLG（HDR）の印が付いたままだが、中身は 8bit の SDR として作っているので BT.709 の印に付け替える
+         "-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1",
+         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", a.out])
     frames = sum(int(subprocess.run(["ffprobe", "-v", "error", "-count_packets", "-select_streams", "v", "-show_entries",
                                      "stream=nb_read_packets", "-of", "csv=p=0", s], capture_output=True, text=True).stdout.strip().strip(",")) for s in segs)
     print(f"{a.out}  映像 {frames} コマ = {frames / FPS:.2f}秒 / 音 {sum(d for _, _, d, _ in audio):.2f}秒  区間 {len(segs)}")
